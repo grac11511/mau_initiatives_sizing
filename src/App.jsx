@@ -1,5 +1,5 @@
 import React from "react";
-import { useReducer, useMemo } from "react";
+import { useReducer, useMemo, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 
 // ─── CANVA COLOURS ────────────────────────────────────────────────────────────
@@ -20,6 +20,19 @@ const C = {
   white:       "#FFFFFF",
   gray:        "#73726C",
 };
+
+// Client-side gate only — password is visible in bundle; use for casual access control.
+const ACCESS_SESSION_KEY = "mau_initiative_sizing_access_v1";
+const ACCESS_PASSWORD = "ToplineMAU2026";
+
+function readSessionUnlocked() {
+  if (typeof window === "undefined") return false;
+  try {
+    return sessionStorage.getItem(ACCESS_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 // ─── REGION → COUNTRY (Controls tab) ─────────────────────────────────────────
 const REGION_COUNTRIES = {
@@ -383,6 +396,10 @@ function DashTable({ title, subtitle, data, accent, accentLight }) {
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
+  const [unlocked, setUnlocked] = useState(readSessionUnlocked);
+  const [pwInput, setPwInput] = useState("");
+  const [pwErr, setPwErr] = useState(false);
+
   const [s, dispatch] = useReducer(reducer, init);
   const { tab, countries, cases, activeCaseId } = s;
   const activeCase = cases.find(c => c.id === activeCaseId);
@@ -428,6 +445,61 @@ export default function App() {
     cursor: "pointer", fontSize: 14, fontWeight: tab === key ? 700 : 400,
     color: tab === key ? C.text : C.textMuted, fontFamily: "inherit", transition: "all 0.15s",
   });
+
+  if (!unlocked) {
+    return (
+      <div style={{
+        minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans','Helvetica Neue',sans-serif",
+        color: C.text, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+      }}>
+        <div style={{
+          background: C.white, borderRadius: 14, border: `1px solid ${C.border}`,
+          padding: "32px 36px", maxWidth: 400, width: "100%", boxShadow: "0 8px 32px rgba(0,0,0,0.06)",
+        }}>
+          <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700 }}>Sign in</h2>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: C.textMuted, lineHeight: 1.45 }}>
+            Enter the password to use International initiative sizing.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (pwInput === ACCESS_PASSWORD) {
+                try { sessionStorage.setItem(ACCESS_SESSION_KEY, "1"); } catch { /* ignore */ }
+                setUnlocked(true);
+                setPwErr(false);
+                setPwInput("");
+              } else {
+                setPwErr(true);
+              }
+            }}
+          >
+            <label htmlFor="access-pw" style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 6 }}>Password</label>
+            <input
+              id="access-pw"
+              type="password"
+              autoComplete="current-password"
+              value={pwInput}
+              onChange={(e) => { setPwInput(e.target.value); setPwErr(false); }}
+              style={{
+                width: "100%", padding: "10px 12px", border: `1px solid ${pwErr ? "#dc2626" : C.border}`, borderRadius: 8,
+                fontSize: 14, fontFamily: "inherit", boxSizing: "border-box", outline: "none", marginBottom: 12,
+              }}
+              onFocus={(e) => { e.target.style.borderColor = C.teal; }}
+              onBlur={(e) => { e.target.style.borderColor = pwErr ? "#dc2626" : C.border; }}
+            />
+            {pwErr && <div style={{ fontSize: 12, color: "#dc2626", marginBottom: 12 }}>Incorrect password.</div>}
+            <button
+              type="submit"
+              style={{
+                width: "100%", padding: "11px 16px", background: C.text, color: C.white, border: "none",
+                borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >Continue</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans','Helvetica Neue',sans-serif", color: C.text }}>
