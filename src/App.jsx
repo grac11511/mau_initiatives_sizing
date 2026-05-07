@@ -41,7 +41,8 @@ function regionForCountry(countryName) {
 }
 
 const REGION_ENTRIES = Object.entries(REGION_COUNTRIES);
-const TOTAL_COUNTRY_BUTTONS = Object.values(REGION_COUNTRIES).reduce((n, list) => n + list.length, 0);
+const ALL_MARKET_COUNTRIES = Object.values(REGION_COUNTRIES).flat();
+const TOTAL_COUNTRY_BUTTONS = ALL_MARKET_COUNTRIES.length;
 
 // ─── METRICS (Dash tab 1.11) ──────────────────────────────────────────────────
 const METRICS = [
@@ -81,8 +82,25 @@ COUNTRY_DATA["Rest of SSA"]  = COUNTRY_DATA["Sub-Saharan Africa"];
 
 const NULL_BASE = { signups: Array(12).fill(0), priorMAU: Array(12).fill(0), newMAURate: Array(12).fill(0), churnRate: Array(12).fill(0), inactive: Array(12).fill(0), reactRate: Array(12).fill(0) };
 
+/** Countries like GCC may have null series in COUNTRY_DATA — never pass null arrays into computeModel. */
+function normalizeMonthSeries(v) {
+  const out = Array(12).fill(0);
+  if (!Array.isArray(v)) return out;
+  for (let i = 0; i < 12; i++) out[i] = v[i] ?? 0;
+  return out;
+}
+
 function getBase(country) {
-  return COUNTRY_DATA[country] || NULL_BASE;
+  const raw = COUNTRY_DATA[country];
+  if (!raw) return NULL_BASE;
+  return {
+    signups: normalizeMonthSeries(raw.signups),
+    priorMAU: normalizeMonthSeries(raw.priorMAU),
+    newMAURate: normalizeMonthSeries(raw.newMAURate),
+    churnRate: normalizeMonthSeries(raw.churnRate),
+    inactive: normalizeMonthSeries(raw.inactive),
+    reactRate: normalizeMonthSeries(raw.reactRate),
+  };
 }
 
 // ─── MODEL COMPUTATION ────────────────────────────────────────────────────────
@@ -194,6 +212,33 @@ function computeModel(metrics, country) {
   return { uplift, base, incr };
 }
 
+const MODEL_KEYS = ["signups", "openingMAU", "newMAU", "churned", "reactivating", "mau"];
+
+/** Sum each month across countries; month is null only if every input is null/undefined. */
+function sumMonthlySeries(rowsByCountry) {
+  const out = [];
+  for (let i = 0; i < 12; i++) {
+    const vals = rowsByCountry.map(row => row[i]);
+    const allNull = vals.every(v => v === null || v === undefined);
+    out.push(allNull ? null : vals.reduce((s, v) => s + (v ?? 0), 0));
+  }
+  return out;
+}
+
+/** Combine per-country computeModel outputs into one uplift/base/incr bundle (sums across markets). */
+function aggregateModels(models) {
+  if (!models.length) return null;
+  const uplift = {};
+  const base = {};
+  const incr = {};
+  for (const key of MODEL_KEYS) {
+    uplift[key] = sumMonthlySeries(models.map(m => m.uplift[key]));
+    base[key] = sumMonthlySeries(models.map(m => m.base[key]));
+    incr[key] = sumMonthlySeries(models.map(m => m.incr[key]));
+  }
+  return { uplift, base, incr };
+}
+
 // ─── FORMATTING ──────────────────────────────────────────────────────────────
 const fmtM = (n) => {
   if (n === null || n === undefined) return "—";
@@ -211,15 +256,14 @@ const fmtShort = (n) => {
 
 // ─── REDUCER ──────────────────────────────────────────────────────────────────
 const mkCase = (num) => ({
-  id: Date.now() + Math.random(),
+  id: `case-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`,
   name: `Case ${num}`,
   metrics: METRICS.map(m => ({ key: m.key, enabled: true, values: Array(12).fill("") })),
 });
 
 const init = {
   tab: "configure",
-  country: REGION_ENTRIES[0]?.[1]?.[0] || "US",
-  riskAdj: 100,
+  countries: ["US"],
   cases: [],
   activeCaseId: null,
 };
@@ -227,8 +271,34 @@ const init = {
 function reducer(s, a) {
   switch (a.type) {
     case "SET_TAB":     return { ...s, tab: a.v };
-    case "SET_COUNTRY": return { ...s, country: a.v };
-    case "SET_RISK":    return { ...s, riskAdj: a.v };
+    case "TOGGLE_COUNTRY": {
+      const { name } = a;
+      const selected = s.countries.includes(name);
+      if (selected) return { ...s, countries: s.countries.filter(c => c !== name) };
+      return { ...s, countries: [...s.countries, name] };
+    }
+    case "TOGGLE_REGION": {
+      const list = REGION_COUNTRIES[a.regionName];
+      if (!list?.length) return s;
+      const allIn = list.every(c => s.countries.includes(c));
+      if (allIn) {
+        return { ...s, countries: s.countries.filter(c => !list.includes(c)) };
+      }
+      const seen = new Set(s.countries);
+      const next = [...s.countries];
+      for (const c of list) {
+        if (!seen.has(c)) {
+          seen.add(c);
+          next.push(c);
+        }
+      }
+      return { ...s, countries: next };
+    }
+    case "TOGGLE_ALL_MARKETS": {
+      const allIn = ALL_MARKET_COUNTRIES.length > 0 && ALL_MARKET_COUNTRIES.every(c => s.countries.includes(c));
+      if (allIn) return { ...s, countries: [] };
+      return { ...s, countries: [...ALL_MARKET_COUNTRIES] };
+    }
     case "ADD_CASE": {
       const c = mkCase(s.cases.length + 1);
       return { ...s, cases: [...s.cases, c], activeCaseId: c.id };
@@ -251,7 +321,7 @@ function reducer(s, a) {
 const SL = ({ children }) => <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>{children}</div>;
 const Card = ({ children, style = {} }) => <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: "20px 24px", ...style }}>{children}</div>;
 const Toggle = ({ on, onChange }) => (
-  <button onClick={onChange} style={{ width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer", background: on ? C.teal : C.border, position: "relative", padding: 0, transition: "background 0.18s", flexShrink: 0 }}>
+  <button type="button" onClick={onChange} style={{ width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer", background: on ? C.teal : C.border, position: "relative", padding: 0, transition: "background 0.18s", flexShrink: 0 }}>
     <span style={{ position: "absolute", top: 2, left: on ? 18 : 2, width: 16, height: 16, borderRadius: "50%", background: C.white, transition: "left 0.18s", display: "block" }} />
   </button>
 );
@@ -314,28 +384,43 @@ function DashTable({ title, subtitle, data, accent, accentLight }) {
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [s, dispatch] = useReducer(reducer, init);
-  const { tab, country, riskAdj, cases, activeCaseId } = s;
+  const { tab, countries, cases, activeCaseId } = s;
   const activeCase = cases.find(c => c.id === activeCaseId);
-  const selectedRegion = regionForCountry(country);
+  const countryChip = countries.length ? countries.join(", ") : "—";
+  const selectedRegion = countries.length ? [...new Set(countries.map(regionForCountry))].join(", ") : "—";
+  const allMarketsIn = ALL_MARKET_COUNTRIES.length > 0 && ALL_MARKET_COUNTRIES.every(c => countries.includes(c));
+  const someMarketsIn = ALL_MARKET_COUNTRIES.some(c => countries.includes(c));
+  const partialAllMarkets = someMarketsIn && !allMarketsIn;
 
   // ── Compute model whenever active case metrics change ──
   const model = useMemo(() => {
-    if (!activeCase) return null;
-    return computeModel(activeCase.metrics, country);
-  }, [activeCase, country]);
+    if (!activeCase || countries.length === 0) return null;
+    const perCountry = countries.map(c => computeModel(activeCase.metrics, c));
+    return aggregateModels(perCountry);
+  }, [activeCase, countries]);
 
   // Chart data
   const chartData = useMemo(() => {
-    return MONTHS.map((m, i) => ({
-      month: m,
-      "Uplift case": model ? Math.round(model.uplift.mau[i] / 1e5) / 10 : null,
-      "Base case":   model ? Math.round(model.base.mau[i] / 1e5) / 10 : null,
-    }));
+    return MONTHS.map((m, i) => {
+      const up = model?.uplift.mau[i];
+      const ba = model?.base.mau[i];
+      const safeM = (v) => (typeof v === "number" && !Number.isNaN(v) ? Math.round(v / 1e5) / 10 : null);
+      return {
+        month: m,
+        "Uplift case": model ? safeM(up) : null,
+        "Base case":   model ? safeM(ba) : null,
+      };
+    });
   }, [model]);
 
-  const totalIncrMAU = model ? model.incr.mau.reduce((s, v) => s + (v || 0), 0) : 0;
-  const peakMAU      = model ? Math.max(...model.uplift.mau) : 0;
-  const endMAU       = model ? model.uplift.mau[11] : 0;
+  const totalIncrMAU = model ? model.incr.mau.reduce((s, v) => s + (typeof v === "number" && !Number.isNaN(v) ? v : 0), 0) : 0;
+  const peakMAU      = model ? (() => {
+    const vals = model.uplift.mau.filter(v => typeof v === "number" && !Number.isNaN(v));
+    return vals.length ? Math.max(...vals) : 0;
+  })() : 0;
+  const endMAU       = model && typeof model.uplift.mau[11] === "number" && !Number.isNaN(model.uplift.mau[11])
+    ? model.uplift.mau[11]
+    : 0;
 
   const tabStyle = (key) => ({
     padding: "10px 20px", background: "none", border: "none",
@@ -357,8 +442,8 @@ export default function App() {
             </div>
           </div>
           <div style={{ display: "flex", marginBottom: -1 }}>
-            <button style={tabStyle("configure")} onClick={() => dispatch({ type: "SET_TAB", v: "configure" })}>Initiative sizing</button>
-            <button style={tabStyle("results")}   onClick={() => dispatch({ type: "SET_TAB", v: "results"   })}>Results</button>
+            <button type="button" style={tabStyle("configure")} onClick={() => dispatch({ type: "SET_TAB", v: "configure" })}>Initiative sizing</button>
+            <button type="button" style={tabStyle("results")}   onClick={() => dispatch({ type: "SET_TAB", v: "results"   })}>Results</button>
           </div>
         </div>
       </div>
@@ -369,39 +454,60 @@ export default function App() {
         {tab === "configure" && (
           <div style={{ paddingTop: 24 }}>
             <Card style={{ marginBottom: 14 }}>
-              {/* Regions (text) + country buttons; one country selected globally */}
-              <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 18 }}>
-                <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 12 }}>
-                  {REGION_ENTRIES.map(([regionName, countryList]) => (
+              <label style={{
+                display: "flex", alignItems: "center", gap: 8, marginBottom: 14, cursor: "pointer", userSelect: "none",
+              }}>
+                <input
+                  type="checkbox"
+                  checked={allMarketsIn}
+                  ref={(el) => { if (el) el.indeterminate = partialAllMarkets; }}
+                  onChange={() => dispatch({ type: "TOGGLE_ALL_MARKETS" })}
+                  style={{ width: 16, height: 16, accentColor: C.tealDark, cursor: "pointer", flexShrink: 0 }}
+                />
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text, letterSpacing: "0.02em" }}>Global</span>
+                <span style={{ fontSize: 12, color: C.textFaint, fontWeight: 400 }}>({TOTAL_COUNTRY_BUTTONS} countries)</span>
+              </label>
+              {/* Region checkbox (select all / clear region) + country pills — multi-select */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 18 }}>
+                  {REGION_ENTRIES.map(([regionName, countryList]) => {
+                    const allIn = countryList.length > 0 && countryList.every(c => countries.includes(c));
+                    const someIn = countryList.some(c => countries.includes(c));
+                    const partial = someIn && !allIn;
+                    return (
                     <div key={regionName} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 14px" }}>
-                      <span style={{
-                        minWidth: 112, fontSize: 13, fontWeight: 600, color: C.text,
-                        letterSpacing: "0.01em",
-                      }}>{regionName}</span>
+                      <label style={{
+                        display: "flex", alignItems: "center", gap: 8, minWidth: 136, cursor: "pointer", flexShrink: 0,
+                      }}>
+                        <input
+                          type="checkbox"
+                          checked={allIn}
+                          ref={(el) => { if (el) el.indeterminate = partial; }}
+                          onChange={() => dispatch({ type: "TOGGLE_REGION", regionName })}
+                          style={{ width: 16, height: 16, accentColor: C.tealDark, cursor: "pointer", flexShrink: 0 }}
+                        />
+                        <span style={{
+                          fontSize: 13, fontWeight: 600, color: C.text,
+                          letterSpacing: "0.01em",
+                        }}>{regionName}</span>
+                      </label>
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, flex: 1 }}>
-                        {countryList.map(c => (
-                          <button key={`${regionName}-${c}`} type="button" onClick={() => dispatch({ type: "SET_COUNTRY", v: c })} style={{
-                            padding: "5px 13px", borderRadius: 20,
-                            border: `1.5px solid ${country === c ? C.tealDark : C.border}`,
-                            background: country === c ? C.tealLight : C.white,
-                            color: country === c ? C.tealDark : C.textMuted,
-                            fontSize: 13, fontWeight: country === c ? 600 : 400,
-                            cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
-                          }}>{c}</button>
-                        ))}
+                        {countryList.map(c => {
+                          const on = countries.includes(c);
+                          return (
+                            <button key={`${regionName}-${c}`} type="button" onClick={() => dispatch({ type: "TOGGLE_COUNTRY", name: c })} style={{
+                              padding: "5px 13px", borderRadius: 20,
+                              border: `1.5px solid ${on ? C.tealDark : C.border}`,
+                              background: on ? C.tealLight : C.white,
+                              color: on ? C.tealDark : C.textMuted,
+                              fontSize: 13, fontWeight: on ? 600 : 400,
+                              cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
+                            }}>{c}</button>
+                          );
+                        })}
                       </div>
                     </div>
-                  ))}
-                </div>
-                <div>
-                  <SL>Risk adj.</SL>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                    <input type="number" min={0} max={100} value={riskAdj}
-                      onChange={e => dispatch({ type: "SET_RISK", v: Math.max(0, Math.min(100, Number(e.target.value))) })}
-                      style={{ width: 60, padding: "8px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontWeight: 600, textAlign: "right", fontFamily: "inherit", color: C.text, outline: "none" }} />
-                    <span style={{ fontSize: 13, color: C.textMuted }}>%</span>
-                  </div>
-                </div>
+                    );
+                  })}
               </div>
               {/* Divider */}
               <div style={{ borderTop: `0.5px solid ${C.border}`, marginBottom: 16 }} />
@@ -411,7 +517,7 @@ export default function App() {
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                   {cases.map(c => (
                     <div key={c.id} style={{ display: "flex", alignItems: "stretch" }}>
-                      <button onClick={() => dispatch({ type: "SET_ACTIVE", id: c.id })} style={{
+                      <button type="button" onClick={() => dispatch({ type: "SET_ACTIVE", id: c.id })} style={{
                         padding: "5px 13px", borderRadius: cases.length > 1 ? "20px 0 0 20px" : "20px",
                         border: `1.5px solid ${c.id === activeCaseId ? C.tealDark : C.border}`,
                         borderRight: cases.length > 1 ? "none" : undefined,
@@ -421,7 +527,7 @@ export default function App() {
                         cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
                       }}>{c.name}</button>
                       {cases.length > 1 && (
-                        <button onClick={() => dispatch({ type: "REMOVE_CASE", id: c.id })} style={{
+                        <button type="button" onClick={() => dispatch({ type: "REMOVE_CASE", id: c.id })} style={{
                           padding: "5px 8px", borderRadius: "0 20px 20px 0",
                           border: `1.5px solid ${c.id === activeCaseId ? C.tealDark : C.border}`,
                           background: c.id === activeCaseId ? C.tealLight : C.white,
@@ -432,7 +538,7 @@ export default function App() {
                     </div>
                   ))}
                   {cases.length < 4 && (
-                    <button onClick={() => dispatch({ type: "ADD_CASE" })} style={{
+                    <button type="button" onClick={() => dispatch({ type: "ADD_CASE" })} style={{
                       padding: "5px 13px", borderRadius: 20, border: `1.5px dashed #C8C8C4`,
                       background: "transparent", color: C.textMuted, fontSize: 13, cursor: "pointer", fontFamily: "inherit",
                     }}
@@ -533,14 +639,14 @@ export default function App() {
             </Card>
 
             <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <button onClick={() => dispatch({ type: "SET_TAB", v: "results" })} disabled={!activeCase} style={{
-                padding: "11px 26px", background: activeCase ? C.text : C.border, color: activeCase ? C.white : C.textFaint,
-                border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: activeCase ? "pointer" : "not-allowed", fontFamily: "inherit",
+              <button type="button" onClick={() => dispatch({ type: "SET_TAB", v: "results" })} disabled={!activeCase || countries.length === 0} style={{
+                padding: "11px 26px", background: activeCase && countries.length > 0 ? C.text : C.border, color: activeCase && countries.length > 0 ? C.white : C.textFaint,
+                border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: activeCase && countries.length > 0 ? "pointer" : "not-allowed", fontFamily: "inherit",
               }}
-                onMouseEnter={e => { if (activeCase) e.currentTarget.style.opacity = "0.82"; }}
+                onMouseEnter={e => { if (activeCase && countries.length > 0) e.currentTarget.style.opacity = "0.82"; }}
                 onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
               >Calculate impact →</button>
-              {activeCase && <span style={{ fontSize: 12, color: C.textMuted }}>{country} · {selectedRegion} · {activeCase.name} · Risk adj. {riskAdj}%</span>}
+              {activeCase && <span style={{ fontSize: 12, color: C.textMuted }}>{countryChip} · {selectedRegion} · {activeCase.name}</span>}
             </div>
           </div>
         )}
@@ -550,12 +656,12 @@ export default function App() {
           <div style={{ paddingTop: 24 }}>
             {/* Context chips */}
             <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
-              {[["Country", country], ["Region", selectedRegion], ["Case", activeCase?.name || "—"], ["Risk adj.", riskAdj + "%"]].map(([l, v]) => (
+              {[["Country", countryChip], ["Region", selectedRegion], ["Case", activeCase?.name || "—"]].map(([l, v]) => (
                 <div key={l} style={{ background: C.bgSecondary, borderRadius: 8, padding: "6px 12px", fontSize: 13, border: `1px solid ${C.border}` }}>
                   <span style={{ color: C.textMuted }}>{l}: </span><span style={{ fontWeight: 600 }}>{v}</span>
                 </div>
               ))}
-              <button onClick={() => dispatch({ type: "SET_TAB", v: "configure" })} style={{
+              <button type="button" onClick={() => dispatch({ type: "SET_TAB", v: "configure" })} style={{
                 padding: "6px 14px", background: "none", border: `1px solid ${C.border}`, borderRadius: 8,
                 fontSize: 13, cursor: "pointer", color: C.textMuted, fontFamily: "inherit",
               }}
@@ -564,8 +670,10 @@ export default function App() {
               >← Edit</button>
             </div>
 
-            {!model ? (
+            {!activeCase ? (
               <Card><div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>No case configured — go back and add a case.</div></Card>
+            ) : countries.length === 0 ? (
+              <Card><div style={{ padding: 24, textAlign: "center", color: C.textMuted }}>No countries selected — choose one or more markets under Initiative sizing.</div></Card>
             ) : (
               <>
                 {/* KPI cards */}
@@ -631,7 +739,7 @@ export default function App() {
                 />
 
                 <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-                  Jan–Mar 2026 = actuals (highlighted in teal above). Uplifts applied from Apr 2026. Data: {country} / {selectedRegion}.
+                  Jan–Mar 2026 = actuals (highlighted in teal above). Uplifts applied from Apr 2026. Data: {countryChip} / {selectedRegion}.
                 </div>
               </>
             )}
