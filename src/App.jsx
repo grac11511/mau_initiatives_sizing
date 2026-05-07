@@ -33,6 +33,16 @@ const REGION_COUNTRIES = {
   SSA:    ["South Africa","Rest of SSA"],
 };
 
+function regionForCountry(countryName) {
+  for (const [regionName, list] of Object.entries(REGION_COUNTRIES)) {
+    if (list.includes(countryName)) return regionName;
+  }
+  return "—";
+}
+
+const REGION_ENTRIES = Object.entries(REGION_COUNTRIES);
+const TOTAL_COUNTRY_BUTTONS = Object.values(REGION_COUNTRIES).reduce((n, list) => n + list.length, 0);
+
 // ─── METRICS (Dash tab 1.11) ──────────────────────────────────────────────────
 const METRICS = [
   { key: "signups",       label: "Signups",                  desc: "% uplift to signup volume" },
@@ -206,12 +216,17 @@ const mkCase = (num) => ({
   metrics: METRICS.map(m => ({ key: m.key, enabled: true, values: Array(12).fill("") })),
 });
 
-const init = { tab: "configure", region: "NAMER", country: "US", riskAdj: 100, cases: [], activeCaseId: null };
+const init = {
+  tab: "configure",
+  country: REGION_ENTRIES[0]?.[1]?.[0] || "US",
+  riskAdj: 100,
+  cases: [],
+  activeCaseId: null,
+};
 
 function reducer(s, a) {
   switch (a.type) {
     case "SET_TAB":     return { ...s, tab: a.v };
-    case "SET_REGION":  return { ...s, region: a.v, country: REGION_COUNTRIES[a.v]?.[0] || "" };
     case "SET_COUNTRY": return { ...s, country: a.v };
     case "SET_RISK":    return { ...s, riskAdj: a.v };
     case "ADD_CASE": {
@@ -299,9 +314,9 @@ function DashTable({ title, subtitle, data, accent, accentLight }) {
 // ─── APP ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [s, dispatch] = useReducer(reducer, init);
-  const { tab, region, country, riskAdj, cases, activeCaseId } = s;
+  const { tab, country, riskAdj, cases, activeCaseId } = s;
   const activeCase = cases.find(c => c.id === activeCaseId);
-  const countries = REGION_COUNTRIES[region] || [];
+  const selectedRegion = regionForCountry(country);
 
   // ── Compute model whenever active case metrics change ──
   const model = useMemo(() => {
@@ -322,13 +337,6 @@ export default function App() {
   const peakMAU      = model ? Math.max(...model.uplift.mau) : 0;
   const endMAU       = model ? model.uplift.mau[11] : 0;
 
-  const selectStyle = {
-    padding: "8px 28px 8px 10px", border: `1px solid ${C.border}`, borderRadius: 8,
-    fontSize: 13, fontWeight: 600, color: C.text, background: C.white, cursor: "pointer",
-    fontFamily: "inherit", outline: "none", appearance: "none",
-    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%236B6B68' d='M5 7L0 2h10z'/%3E%3C/svg%3E")`,
-    backgroundRepeat: "no-repeat", backgroundPosition: "right 8px center",
-  };
   const tabStyle = (key) => ({
     padding: "10px 20px", background: "none", border: "none",
     borderBottom: tab === key ? `2.5px solid ${C.teal}` : "2.5px solid transparent",
@@ -345,7 +353,7 @@ export default function App() {
           <div style={{ padding: "18px 0 0" }}>
             <h1 style={{ margin: "0 0 2px", fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em" }}>International initiative sizing</h1>
             <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 12 }}>
-              12 months · {Object.keys(REGION_COUNTRIES).length} regions · {Object.values(REGION_COUNTRIES).flat().length} countries
+              12 months · {REGION_ENTRIES.length} regions · {TOTAL_COUNTRY_BUTTONS} countries
             </div>
           </div>
           <div style={{ display: "flex", marginBottom: -1 }}>
@@ -361,28 +369,29 @@ export default function App() {
         {tab === "configure" && (
           <div style={{ paddingTop: 24 }}>
             <Card style={{ marginBottom: 14 }}>
-              {/* Row 1: Region, Country, Risk adj */}
+              {/* Regions (text) + country buttons; one country selected globally */}
               <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 18 }}>
-                <div style={{ minWidth: 140 }}>
-                  <SL>Region</SL>
-                  <select value={region} onChange={e => dispatch({ type: "SET_REGION", v: e.target.value })} style={selectStyle}>
-                    {Object.keys(REGION_COUNTRIES).map(r => <option key={r}>{r}</option>)}
-                  </select>
-                </div>
-                <div style={{ flex: 1, minWidth: 160 }}>
-                  <SL>Country</SL>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                    {countries.map(c => (
-                      <button key={c} onClick={() => dispatch({ type: "SET_COUNTRY", v: c })} style={{
-                        padding: "5px 13px", borderRadius: 20,
-                        border: `1.5px solid ${country === c ? C.tealDark : C.border}`,
-                        background: country === c ? C.tealLight : C.white,
-                        color: country === c ? C.tealDark : C.textMuted,
-                        fontSize: 13, fontWeight: country === c ? 600 : 400,
-                        cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
-                      }}>{c}</button>
-                    ))}
-                  </div>
+                <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 12 }}>
+                  {REGION_ENTRIES.map(([regionName, countryList]) => (
+                    <div key={regionName} style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 14px" }}>
+                      <span style={{
+                        minWidth: 112, fontSize: 13, fontWeight: 600, color: C.text,
+                        letterSpacing: "0.01em",
+                      }}>{regionName}</span>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, flex: 1 }}>
+                        {countryList.map(c => (
+                          <button key={`${regionName}-${c}`} type="button" onClick={() => dispatch({ type: "SET_COUNTRY", v: c })} style={{
+                            padding: "5px 13px", borderRadius: 20,
+                            border: `1.5px solid ${country === c ? C.tealDark : C.border}`,
+                            background: country === c ? C.tealLight : C.white,
+                            color: country === c ? C.tealDark : C.textMuted,
+                            fontSize: 13, fontWeight: country === c ? 600 : 400,
+                            cursor: "pointer", fontFamily: "inherit", transition: "all 0.12s",
+                          }}>{c}</button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <div>
                   <SL>Risk adj.</SL>
@@ -531,7 +540,7 @@ export default function App() {
                 onMouseEnter={e => { if (activeCase) e.currentTarget.style.opacity = "0.82"; }}
                 onMouseLeave={e => { e.currentTarget.style.opacity = "1"; }}
               >Calculate impact →</button>
-              {activeCase && <span style={{ fontSize: 12, color: C.textMuted }}>{country} · {region} · {activeCase.name} · Risk adj. {riskAdj}%</span>}
+              {activeCase && <span style={{ fontSize: 12, color: C.textMuted }}>{country} · {selectedRegion} · {activeCase.name} · Risk adj. {riskAdj}%</span>}
             </div>
           </div>
         )}
@@ -541,7 +550,7 @@ export default function App() {
           <div style={{ paddingTop: 24 }}>
             {/* Context chips */}
             <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
-              {[["Country", country], ["Region", region], ["Case", activeCase?.name || "—"], ["Risk adj.", riskAdj + "%"]].map(([l, v]) => (
+              {[["Country", country], ["Region", selectedRegion], ["Case", activeCase?.name || "—"], ["Risk adj.", riskAdj + "%"]].map(([l, v]) => (
                 <div key={l} style={{ background: C.bgSecondary, borderRadius: 8, padding: "6px 12px", fontSize: 13, border: `1px solid ${C.border}` }}>
                   <span style={{ color: C.textMuted }}>{l}: </span><span style={{ fontWeight: 600 }}>{v}</span>
                 </div>
@@ -622,7 +631,7 @@ export default function App() {
                 />
 
                 <div style={{ fontSize: 11, color: C.textFaint, marginTop: 8, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-                  Jan–Mar 2026 = actuals (highlighted in teal above). Uplifts applied from Apr 2026. Data: {country} / {region}.
+                  Jan–Mar 2026 = actuals (highlighted in teal above). Uplifts applied from Apr 2026. Data: {country} / {selectedRegion}.
                 </div>
               </>
             )}
